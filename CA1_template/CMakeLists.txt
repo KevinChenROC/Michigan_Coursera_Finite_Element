@@ -29,3 +29,8 @@ ENDIF()
 DEAL_II_INITIALIZE_CACHED_VARIABLES()
 PROJECT(${TARGET})
 DEAL_II_INVOKE_AUTOPILOT()
+
+# Find HDF5 (module mode) and add include dirs + libs to your target
+find_package(HDF5 REQUIRED COMPONENTS C HL)
+target_include_directories(${TARGET} PRIVATE ${HDF5_INCLUDE_DIRS})
+target_link_libraries(${TARGET} PRIVATE ${HDF5_LIBRARIES})
