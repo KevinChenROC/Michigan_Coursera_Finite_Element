@@ -41,6 +41,12 @@
 
 using namespace dealii;
 
+//EDIT define global physical constants for the problems
+const double E = 1e11;      // Pa
+const double Area = 1e-4;   // m^2
+const double fbar = 1e11;   // N m^-4   (so f(x) = fbar * x)
+const double hN = 1e6;      // N        (traction*Area at x=L for problem 2)
+
 template <int dim>
 class FEM
 {
@@ -157,7 +163,13 @@ double FEM<dim>::basis_function(unsigned int node, double xi){
     at any node in the element - using deal.II's element node numbering pattern.*/
 
   //EDIT
-
+  const unsigned int p = (unsigned int)basisFunctionOrder;
+  const double xi_i = xi_at_node(node);
+  for (unsigned int j=0; j<=p; ++j){
+    if (j==node) continue;
+    const double xi_j = xi_at_node(j);
+    value *= (xi - xi_j)/(xi_i - xi_j);
+  }
   return value;
 }
 
@@ -168,7 +180,7 @@ double FEM<dim>::basis_gradient(unsigned int node, double xi){
     "node" specifies which node the basis function corresponds to, 
     "xi" is the point (in the bi-unit domain) where the function is being evaluated.
     You need to calculate the value of the derivative of the specified basis function and order at the given quadrature pt.
-    Note that this is the derivative with respect to xi (not x)*/
+    Note that this is the derivative with respect to xi (biunit domain [-1,1]) (not x)*/
 
   double value = 0.; //Store the value of the gradient of the basis function in this variable
 
@@ -176,7 +188,17 @@ double FEM<dim>::basis_gradient(unsigned int node, double xi){
     at any node in the element - using deal.II's element node numbering pattern.*/
 
   //EDIT
-
+  const unsigned int p = (unsigned int)basisFunctionOrder;
+  const double xi_i = xi_at_node(node);
+  for (unsigned int m=0; m<=p; ++m){
+    if (m==node) continue;
+    double term = 1.0/(xi_i - xi_at_node(m));
+    for (unsigned int j=0; j<=p; ++j){
+      if (j==node || j==m) continue;
+      term *= (xi - xi_at_node(j)) / (xi_i - xi_at_node(j));
+    }
+    value += term;
+  }
   return value;
 }
 
@@ -185,7 +207,7 @@ template <int dim>
 void FEM<dim>::generate_mesh(unsigned int numberOfElements){
 
   //Define the limits of your domain
-  L = ; //EDIT
+  L = 0.1 ; //in metre. EDIT
   double x_min = 0.;
   double x_max = L;
 
@@ -229,7 +251,7 @@ template <int dim>
 void FEM<dim>::setup_system(){
 
   //Define constants for problem (Dirichlet boundary values)
-  g1 = ; g2 = ; //EDIT
+  g1 = 0; g2 = 0.001; //in metre. EDIT
 
   //Let deal.II organize degrees of freedom
   dof_handler.distribute_dofs (fe);
@@ -255,17 +277,27 @@ void FEM<dim>::setup_system(){
   F.reinit (dof_handler.n_dofs());
   D.reinit (dof_handler.n_dofs());
 
-  //Define quadrature rule
+  //EDIT Define quadrature rule 
   /*A quad rule of 2 is included here as an example. You will need to decide
-    what quadrature rule is needed for the given problems*/
-  quadRule = 2; //EDIT - Number of quadrature points along one dimension
-  quad_points.resize(quadRule); quad_weight.resize(quadRule);
-
-  quad_points[0] = -sqrt(1./3.); //EDIT
-  quad_points[1] = sqrt(1./3.); //EDIT
-
-  quad_weight[0] = 1.; //EDIT
-  quad_weight[1] = 1.; //EDIT
+  what quadrature rule is needed for the given problems*/
+  // Use 2-point rule for both p=1 and p=2
+  const unsigned int p = static_cast<unsigned int>(basisFunctionOrder);
+  if (p <= 2) {
+    quadRule = 2;
+    quad_points = { -std::sqrt(1.0/3.0),  std::sqrt(1.0/3.0) };
+    quad_weight = { 1.0,                  1.0 };
+  }
+  // Use 3-point rule for cubic elements
+  else if (p == 3) {
+    quadRule = 3;
+    quad_points = { -std::sqrt(3.0/5.0),  0.0,  std::sqrt(3.0/5.0) };
+    quad_weight = { 5.0/9.0,              8.0/9.0, 5.0/9.0 };
+  }
+  // Safety fallback
+  else {
+    std::cerr << "Quadrature not implemented for order p=" << p << std::endl;
+    std::exit(1);
+  }
 
   //Just some notes...
   std::cout << "   Number of active elems:       " << triangulation.n_active_cells() << std::endl;
@@ -304,28 +336,37 @@ void FEM<dim>::assemble_system(){
     Flocal = 0.;
     for(unsigned int A=0; A<dofs_per_elem; A++){
       for(unsigned int q=0; q<quadRule; q++){
-	x = 0;
-	//Interpolate the x-coordinates at the nodes to find the x-coordinate at the quad pt.
-	for(unsigned int B=0; B<dofs_per_elem; B++){
-	  x += nodeLocation[local_dof_indices[B]]*basis_function(B,quad_points[q]);
-	}
-	//EDIT - Define Flocal.
+        x = 0;
+        //Interpolate the x-coordinates at the nodes to find the x-coordinate at the quad pt.
+        for(unsigned int B=0; B<dofs_per_elem; B++){
+          x += nodeLocation[local_dof_indices[B]]*basis_function(B,quad_points[q]);
+        }
+        //EDIT - Define Flocal.
+        const double N_A = basis_function(A, quad_points[q]);
+        const double J = 0.5 * h_e;                 // dx/dξ
+        const double fq = fbar * x;                 // f(x)
+        Flocal[A] += quad_weight[q] * N_A * (fq * Area) * J;
       }
     }
     //Add nonzero Neumann condition, if applicable
     if(prob == 2){ 
       if(nodeLocation[local_dof_indices[1]] == L){
-	//EDIT - Modify Flocal to include the traction on the right boundary.
+        //EDIT - Modify Flocal to include the traction on the right boundary.
+        Flocal[1] += hN;
       }
     }
 
-    //Loop over local DOFs and quadrature points to populate Klocal
+    //EDIT Loop over local DOFs and quadrature points to populate Klocal
     Klocal = 0;
     for(unsigned int A=0; A<dofs_per_elem; A++){
       for(unsigned int B=0; B<dofs_per_elem; B++){
-	for(unsigned int q=0; q<quadRule; q++){
-	  //EDIT - Define Klocal.
-	}
+        double sum_q = 0.0;
+        for (unsigned int q=0; q<quadRule; ++q){
+          const double dNa_dxi = basis_gradient(A, quad_points[q]);
+          const double dNb_dxi = basis_gradient(B, quad_points[q]);
+          sum_q += quad_weight[q] * dNa_dxi * dNb_dxi;
+        }
+        Klocal[A][B] += E * Area * (2.0/h_e) * sum_q;    
       }
     }
 
@@ -333,13 +374,14 @@ void FEM<dim>::assemble_system(){
     //You will need to used local_dof_indices[A]
     for(unsigned int A=0; A<dofs_per_elem; A++){
       //EDIT - add component A of Flocal to the correct location in F
-      /*Remember, local_dof_indices[A] is the global degree-of-freedom number
-	corresponding to element node number A*/
+      /*Remember, local_dof_indices[A] is the global degree-of-freedom number corresponding to element node number A*/
+      F[local_dof_indices[A]] += Flocal[A];
       for(unsigned int B=0; B<dofs_per_elem; B++){
-	//EDIT - add component A,B of Klocal to the correct location in K (using local_dof_indices)
-	/*Note: K is a sparse matrix, so you need to use the function "add".
-	  For example, to add the variable C to K[i][j], you would use:
-	  K.add(i,j,C);*/
+        //EDIT - add component A,B of Klocal to the correct location in K (using local_dof_indices)
+        /*Note: K is a sparse matrix, so you need to use the function "add".
+          For example, to add the variable C to K[i][j], you would use:
+          K.add(i,j,C);*/
+          K.add(local_dof_indices[A], local_dof_indices[B], Klocal[A][B]);
       }
     }
 
@@ -404,12 +446,32 @@ double FEM<dim>::l2norm_of_error(){
       x = 0.; u_h = 0.;
       //Find the values of x and u_h (the finite element solution) at the quadrature points
       for(unsigned int B=0; B<dofs_per_elem; B++){
-	x += nodeLocation[local_dof_indices[B]]*basis_function(B,quad_points[q]);
-	u_h += D[local_dof_indices[B]]*basis_function(B,quad_points[q]);
+        x   += nodeLocation[local_dof_indices[B]] * basis_function(B,quad_points[q]);
+        u_h += D[local_dof_indices[B]]           * basis_function(B,quad_points[q]);
       }
+
       //EDIT - Find the l2-norm of the error through numerical integration.
       /*This includes evaluating the exact solution at the quadrature points*/
-							
+      {
+
+        // exact solution u(x) = -(fbar/(6E)) x^3 + C1 x + C2
+        const double C2 = g1;
+        double C1;
+        if (prob == 1) {
+          // Dirichlet-Dirichlet: u(0)=g1, u(L)=g2
+          C1 = (g2 - g1)/L + (fbar/(6.0*E))*L*L;
+        } else {
+          // Dirichlet-Neumann: u(0)=g1, EA u_x(L)=hN  -> u_x(L)=hN/(E*Area)
+          C1 = (hN/(E*Area)) + (fbar/(2.0*E))*L*L;
+        }
+
+        u_exact = -(fbar/(6.0*E))*x*x*x + C1*x + C2;
+
+        // accumulate integral: ∫ (u - u_h)^2 dx  ≈ Σ w_q (u - u_h)^2 * J
+        const double J   = 0.5 * h_e;           // dx/dξ for 1D affine map
+        const double err = u_exact - u_h;
+        l2norm += quad_weight[q] * err * err * J;
+      }
     }
   }
 
